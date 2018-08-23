@@ -20,9 +20,13 @@ class IterListGetter:
             return self.result.pop()
         if "next" not in self.response.links:
             raise StopIteration
-        url = self.response.links['next']['url']
+        url = URL(self.response.links['next']['url'])
         self.response = self.client.call('get', url)
         self.result = self.response.json()
+        # there's a bug in the megaphone API where sometimes
+        # a next Link is given but with no values
+        if not self.result:
+            raise StopIteration
         return self.result.pop()
 
 
