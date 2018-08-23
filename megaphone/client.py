@@ -1,91 +1,77 @@
 import requests
 from yarl import URL
 
-BASE_URL = "https://cms.megaphone.fm/api/networks"
+from megaphone.errors import APIError, AuthenticationError
 
-class APIError(Exception):
-    """
-    Any issue with the API.
-    """
+BASE_URL = "https://cms.megaphone.fm/api"
 
 
-class AuthenticationError(Exception):
-    """
-    Error authenticating
-    """
+class IterListGetter:
+    def __init__(self, client, response, parsed):
+        self.client = client
+        self.response = response
+        self.result = parsed
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.result:
+            return self.result.pop()
+        if "next" not in self.response.links:
+            raise StopIteration
+        url = self.response.links['next']['url']
+        self.response = self.client.call('get', url)
+        self.result = self.response.json()
+        return self.result.pop()
 
 
 class HTTPClient:
-    def __init__(self, token, base_url):
-        self.base_url = base_url
+    def __init__(self, token, base_url=None):
+        self.base_url = base_url or URL(BASE_URL)
         self.token = token
-        self.headers = { 'Authorization': 'Token token="%s"' % token }
-        
+        self.headers = {'Authorization': 'Token token="%s"' % token}
+
+    def call(self, method, url, args=None):
+        url = url.with_query(args)
+        resp = getattr(requests, method)(str(url), headers=self.headers)
+        if resp.status_code == 401:
+            raise AuthenticationError(resp.text)
+        elif resp.status_code != 200:
+            raise APIError(resp.text)
+        return resp
+
     def get(self, *parts, **args):
-        url = self.base_url
-        for part in parts:
-            url = url / part
-        url = url.with_query(per_page=5)
-        r = requests.get(str(url), headers=self.headers)
-        print(r.links["next"])
-        if r.status_code == 401:
-            raise AuthenticationError(r.text)
-        elif r.status_code != 200:
-            raise APIError(r.text)
-        return r.json()
+        url = self.base_url / "/".join(parts)
+        result = self.call('get', url, args)
+        parsed = result.json()
+        if isinstance(parsed, list):
+            return IterListGetter(self, result, parsed)
+        return parsed
 
     def __truediv__(self, path):
         return HTTPClient(self.token, self.base_url / path)
 
 
 class APIObject:
-    def __init__(self, data):
+    path = None
+
+    @classmethod
+    def build(klass, http, objid):
+        return klass(http, {'id': objid}).refresh()
+
+    def __init__(self, http, data):
         self.data = data
+        self.http = http / self.__class__.path / self.id
+
+    def refresh(self):
+        self.data = self.http.get()
+        return self
 
     def __getattr__(self, name):
         return self.data[name]
 
     def __str__(self):
-        attrs = ["%s=%s" % (k,v) for k, v in self.data.items()]
+        attrs = ["%s=%s" % (k, v) for k, v in self.data.items()]
         attrs = ", ".join(attrs)
         return "<%s %s>" % (self.__class__.__name__, attrs)
-
-
-class Episode(APIObject):
-    def __init__(self, http, data):
-        super().__init__(data)
-        self.http = http / 'episodes' / data['id']
-
-
-class Podcast(APIObject):
-    def __init__(self, http, data):
-        super().__init__(data)        
-        self.http = http / 'podcasts' / data['id']
-
-    @property
-    def episodes(self):
-        episodes = self.http.get('episodes')
-        return [Episode(self.http, e) for e in episodes]
-
-
-class NetworkClient:
-    def __init__(self, token, network_id):
-        self.network_id = network_id
-        base_url = URL(BASE_URL) / self.network_id
-        self.http = HTTPClient(token, base_url)        
-
-    @property
-    def podcasts(self):
-        podcasts = self.http.get('podcasts')
-        return [Podcast(self.http, p) for p in podcasts]
-
-
-
-nc = NetworkClient()
-es = nc.podcasts
-#for podcast in nc.podcasts:
-#    es = podcast.episodes
-#for podcast in nc.podcasts:
-#    print(podcast.title)
-#for episode in podcast.episodes:
-        
